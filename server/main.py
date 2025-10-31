@@ -7,10 +7,47 @@ import numpy as np
 import time
 from collections import defaultdict
 from scipy import signal
+import os
+from dotenv import load_dotenv
+import telegram
+
+
+# Imports related to InfluxDB
+from influxdb_client import InfluxDBClient, Point, WriteOptions
+from influxdb_client.client.write_api import SYNCHRONOUS
+import datetime
+
+load_dotenv()
+
+# ---------------- InfluxDB Configuration ----------------
+# THIS IS YOUR UNIQUE URL FROM THE INFLUXDB CLOUD UI
+INFLUXDB_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
+INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN")
+# YOUR ORGANIZATION NAME FROM THE CLOUD UI
+INFLUXDB_ORG = "IOT Project"
+# THE BUCKET YOU CREATED IN THE CLOUD UI
+INFLUXDB_BUCKET = "my-bucket"
+
+# Telegram Configuration...
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+ALERT_COOLDOWN_SECONDS = 60
+
+# Initalize telegram bot
+bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+try:
+    influx_client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
+    write_api = influx_client.write_api(write_options=SYNCHRONOUS)
+    print("Successfully connected to InfluxDB Cloud.")
+except Exception as e:
+    print(f"FATAL: Could not connect to InfluxDB. Check credentials. Error: {e}")
+    influx_client = None
+    write_api = None
 
 # --- ADD THIS ENTIRE CLASS ---
 class ConnectionManager:
@@ -52,8 +89,16 @@ machines = defaultdict(lambda: {
     "baseline_state": "needed", "status_counter": 0, "last_potential_status": "idle", "command_queue": [],
     "baseline_dc_offset_x": 0.0, "baseline_dc_offset_y": 0.0, "baseline_dc_offset_z": 0.0,
     "baseline_peak_db_mean": None, "baseline_peak_db_std": None,
-    "fft_freqs": None, "fft_x_db": None, "fft_y_db": None, "fft_z_db": None,
+    "fft_freqs": None, "fft_x_db": None, "fft_y_db": None, "fft_z_db": None,"last_alert_time":0
 })
+
+async def send_telegram_alert(message: str):
+    try:
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+        print(f"Sent Telegram alert: {message}")
+    except Exception as e:
+        print(f"Failed to send Telegram alert: {e}")
+
 # ✅ FIX 1: Add a global dictionary to hold the latest environment data
 environment_data = {"temperature": None, "humidity": None}
 dashboard_clients = set(); _last_broadcast = 0.0
@@ -152,6 +197,16 @@ def compute_fft_and_compare(machine_id):
     if machine["status_counter"] >= STATUS_CHANGE_THRESHOLD and machine["status"] != potential_status:
         previous_status = machine["status"]; machine["status"] = potential_status
         print(f"Status for {machine_id} changed from '{previous_status}' to '{machine['status']}'. Queueing command.")
+
+        # --- ALERTING LOGIC ---
+        now = time.time()
+        if machine["status"] in ["warning", "critical"]:
+            if now - machine.get("last_alert_time", 0) > ALERT_COOLDOWN_SECONDS:
+                alert_message = f"🚨 ALERT: Machine '{machine_id}' status changed to {machine['status'].upper()}!"
+                asyncio.create_task(send_telegram_alert(alert_message))
+                machine["last_alert_time"] = now
+        # --- END ALERTING LOGIC ---
+
         command = None
         if machine["status"] == "active": command = {"action": "set_leds", "red": "off", "yellow": "off"}
         elif machine["status"] == "warning": command = {"action": "set_leds", "red": "off", "yellow": "blink"}
@@ -177,6 +232,37 @@ def prepare_snapshot():
 def process_esp_message(data: dict, machine_id: str):
     global _last_broadcast
     msg_type = data.get("type", "data")
+
+    # --- ADD THIS NEW SECTION TO LOG DATA TO INFLUXDB ---
+    if write_api and msg_type in ["configure", "data", "dht", "baseline_dht"]:
+        try:
+            # A "Point" is a single data record for InfluxDB.
+            point = Point("machine_data") \
+                .tag("machine_id", machine_id) \
+                .tag("type", msg_type) \
+                .time(datetime.datetime.utcnow()) # Use UTC for consistent timestamps
+
+            # Add simple fields like temperature and humidity directly.
+            for key, value in data.items():
+                if key in ["temperature", "humidity"]:
+                    point.field(key, float(value))
+
+            # For vibration arrays, store statistical aggregates, not the raw array.
+            # This is far more efficient for long-term storage.
+            if "x" in data and data["x"]:
+                point.field("x_mean", np.mean(data["x"]))
+                point.field("y_mean", np.mean(data["y"]))
+                point.field("z_mean", np.mean(data["z"]))
+                point.field("batch_size", len(data["x"]))
+
+            # Write the point to your bucket.
+            write_api.write(bucket=INFLUXDB_BUCKET, org=INFLUXDB_ORG, record=point)
+            # This console log confirms the write was successful.
+            print(f"-> Logged '{msg_type}' data for {machine_id} to InfluxDB.")
+
+        except Exception as e:
+            print(f"Error writing to InfluxDB: {e}")
+    # --- END OF NEW SECTION ---
 
     if msg_type == "ping":
         print(f"<- Received keep-alive ping from {machine_id}.")
