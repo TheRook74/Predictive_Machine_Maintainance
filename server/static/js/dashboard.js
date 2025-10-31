@@ -7,9 +7,19 @@ ws.onopen = () => console.log("Dashboard WS open");
 ws.onmessage = (ev) => {
   try {
     const data = JSON.parse(ev.data);
+
+    // 🔹 If data has temperature/humidity (from DHT11)
+    if (data.temperature !== undefined && data.humidity !== undefined) {
+      document.getElementById("temperature").innerText = data.temperature.toFixed(1);
+      document.getElementById("humidity").innerText = data.humidity.toFixed(1);
+    }
+
+    // 🔹 If it’s the usual machine payload
     for (let id in data) {
-      if (!machineCharts[id]) addMachinePanel(id);
-      updateMachinePanel(id, data[id]);
+      if (typeof data[id] === "object" && data[id].x !== undefined) {
+        if (!machineCharts[id]) addMachinePanel(id);
+        updateMachinePanel(id, data[id]);
+      }
     }
   } catch (e) {
     console.error("Failed to parse dashboard message", e);
