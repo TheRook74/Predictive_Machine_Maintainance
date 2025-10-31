@@ -1,0 +1,4 @@
+fastapi
+numpy
+jinja2
+websockets

@@ -1,0 +1,5 @@
+body { background: linear-gradient(180deg,#071024 0%, #041226 100%); color: #e6f0ff; font-family: Inter, system-ui, sans-serif; }
+.machine-panel { box-shadow: 0 6px 18px rgba(0,0,0,0.45); }
+button { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); color: #dbeefe; padding: 6px 10px; border-radius: 8px; cursor: pointer; }
+button:hover { transform: translateY(-1px); }
+.small { font-size: 12px; color: #9fbce8; }
