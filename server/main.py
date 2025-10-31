@@ -12,6 +12,32 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+# --- ADD THIS ENTIRE CLASS ---
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: dict[str, WebSocket] = {}
+
+    async def connect(self, websocket: WebSocket, machine_id: str):
+        # The 'accept' call has been moved to the websocket_esp function.
+        # This method now only stores the already-accepted connection.
+        self.active_connections[machine_id] = websocket
+
+    def disconnect(self, machine_id: str):
+        if machine_id in self.active_connections:
+            del self.active_connections[machine_id]
+
+    async def send_command(self, machine_id: str, command: dict):
+        if machine_id in self.active_connections:
+            websocket = self.active_connections[machine_id]
+            try:
+                await websocket.send_text(json.dumps({"command": command}))
+                print(f"Sent command to {machine_id}: {command}")
+            except Exception as e:
+                print(f"Failed to send command to {machine_id}: {e}")
+
+# Create a single, global instance of the manager
+manager = ConnectionManager()
+
 # ---------------- Configuration ----------------
 BASELINE_SAMPLES_NEEDED = 3000
 EMA_ALPHA = 0.2; BROADCAST_HZ = 15.0; BROADCAST_INTERVAL = 1.0 / BROADCAST_HZ
@@ -130,7 +156,7 @@ def compute_fft_and_compare(machine_id):
         if machine["status"] == "active": command = {"action": "set_leds", "red": "off", "yellow": "off"}
         elif machine["status"] == "warning": command = {"action": "set_leds", "red": "off", "yellow": "blink"}
         elif machine["status"] == "critical": command = {"action": "set_leds", "red": "on", "yellow": "off"}
-        if command: machine["command_queue"].append(command)
+        if command: asyncio.create_task(manager.send_command(machine_id, command))
 
 # ----------------- Routes & WebSockets -----------------
 def prepare_snapshot():
@@ -147,6 +173,41 @@ def prepare_snapshot():
     # The '|' operator merges the two dictionaries.
     return snapshot | environment_data
 
+# --- ADD THIS ENTIRE NEW FUNCTION ---
+def process_esp_message(data: dict, machine_id: str):
+    global _last_broadcast
+    msg_type = data.get("type", "data")
+
+    if msg_type == "ping":
+        print(f"<- Received keep-alive ping from {machine_id}.")
+        return
+
+    machine = machines[machine_id]
+    
+    if msg_type == "configure":
+        x_vals, y_vals, z_vals = data.get("x", []), data.get("y", []), data.get("z", [])
+        machine["baseline_state"] = "collecting"; machine["status"] = "configuring"
+        machine["baseline_x_buffer"].extend(x_vals); machine["baseline_y_buffer"].extend(y_vals); machine["baseline_z_buffer"].extend(z_vals)
+        print(f"Received {len(x_vals)} baseline samples from {machine_id}. Total: {len(machine['baseline_x_buffer'])}")
+        if len(machine["baseline_x_buffer"]) >= BASELINE_SAMPLES_NEEDED:
+            calculate_static_baseline(machine_id)
+    
+    elif msg_type == "data" and machine["baseline_state"] == "ready":
+        x_vals, y_vals, z_vals = data.get("x", []), data.get("y", []), data.get("z", [])
+        apply_ema_and_store(machine_id, x_vals, y_vals, z_vals)
+        compute_fft_and_compare(machine_id) # This function will now send commands via manager
+
+    elif msg_type in ["dht", "baseline_dht"]:
+        temp = data.get("temperature"); hum = data.get("humidity")
+        if temp is not None and hum is not None:
+            environment_data["temperature"] = temp; environment_data["humidity"] = hum
+
+    # Broadcast to dashboards periodically
+    now = time.time()
+    if now - _last_broadcast >= BROADCAST_INTERVAL:
+        asyncio.create_task(broadcast_dashboard())
+        _last_broadcast = now
+
 async def broadcast_dashboard():
     payload = json.dumps(prepare_snapshot())
     for client in list(dashboard_clients):
@@ -158,52 +219,42 @@ async def broadcast_dashboard():
 @app.get("/")
 async def dashboard(request: Request): return templates.TemplateResponse("index.html", {"request": request})
 
+# --- REPLACE THE EXISTING /ws/esp FUNCTION WITH THIS ---
+# --- REPLACE the existing /ws/esp function with this ---
 @app.websocket("/ws/esp")
 async def websocket_esp(websocket: WebSocket):
-    await websocket.accept(); print("ESP32 connected"); machine_id = None; global _last_broadcast
+    # ✅ FIX: Accept the connection *before* trying to read from it.
+    await websocket.accept()
+    
+    machine_id = None
     try:
+        # Now that the connection is accepted, we can safely wait for the first message.
+        initial_data = json.loads(await websocket.receive_text())
+        machine_id = initial_data.get("machine_id") or initial_data.get("id")
+        
+        if not machine_id:
+            print("Closing connection: ESP32 did not send a machine_id on connect.")
+            # We don't need to call close() here, the finally block will handle it.
+            return
+
+        # Use the modified .connect() method which no longer calls .accept()
+        await manager.connect(websocket, machine_id)
+        print(f"ESP '{machine_id}' connected.")
+        
+        # The first message also needs to be processed
+        process_esp_message(initial_data, machine_id)
+
+        # Main loop for listening to all subsequent messages
         while True:
-            data = json.loads(await websocket.receive_text()); machine_id = data.get("machine_id") or data.get("id")
-            msg_type = data.get("type", "data")
+            data = json.loads(await websocket.receive_text())
+            process_esp_message(data, machine_id)
 
-            # Added for handling the pong message...
-            if msg_type == "ping":
-                print("Recieved application Level Ping from ESP-32")
-                continue
-
-            if not machine_id: continue
-            machine = machines[machine_id]; 
-            
-            if msg_type == "configure":
-                x_vals, y_vals, z_vals = data.get("x", []), data.get("y", []), data.get("z", [])
-                machine["baseline_state"] = "collecting"; machine["status"] = "configuring"
-                machine["baseline_x_buffer"].extend(x_vals); machine["baseline_y_buffer"].extend(y_vals); machine["baseline_z_buffer"].extend(z_vals)
-                print(f"Received {len(x_vals)} baseline samples from {machine_id}. Total: {len(machine['baseline_x_buffer'])}")
-                if len(machine["baseline_x_buffer"]) >= BASELINE_SAMPLES_NEEDED: calculate_static_baseline(machine_id)
-            
-            elif msg_type == "data" and machine["baseline_state"] == "ready":
-                x_vals, y_vals, z_vals = data.get("x", []), data.get("y", []), data.get("z", [])
-                apply_ema_and_store(machine_id, x_vals, y_vals, z_vals); compute_fft_and_compare(machine_id)
-
-            # ✅ FIX 1: Add logic to handle incoming DHT sensor data
-            elif msg_type == "dht" or msg_type == "baseline_dht":
-                temp = data.get("temperature")
-                hum = data.get("humidity")
-                if temp is not None and hum is not None:
-                    environment_data["temperature"] = temp
-                    environment_data["humidity"] = hum
-                    print(f"Received Environment Data: Temp={temp}°C, Humidity={hum}%")
-
-            if machine["command_queue"]:
-                cmd = machine["command_queue"].pop(0)
-                try: await websocket.send_text(json.dumps({"command": cmd})); print(f"Sent command to {machine_id}: {cmd}")
-                except Exception as e: print("Failed to send command:", e)
-            
-            now = time.time()
-            if now - _last_broadcast >= BROADCAST_INTERVAL: await broadcast_dashboard(); _last_broadcast = now
-            
-    except WebSocketDisconnect: print(f"{machine_id} disconnected")
-    except Exception as e: print("Exception in websocket_esp:", e)
+    except WebSocketDisconnect:
+        print(f"ESP '{machine_id}' disconnected.")
+    finally:
+        # This will now correctly handle cleanup
+        if machine_id:
+            manager.disconnect(machine_id)
 
 @app.websocket("/ws/dashboard")
 async def websocket_dashboard(websocket: WebSocket):
@@ -219,18 +270,29 @@ async def websocket_dashboard(websocket: WebSocket):
         dashboard_clients.remove(websocket)
         print("Dashboard disconnected (clients):", len(dashboard_clients))
 
+# --- REPLACE THE EXISTING /command FUNCTION WITH THIS ---
 @app.post("/command")
 async def send_command(request: Request):
-    data = await request.json(); machine_id, command = data.get("id"), data.get("command")
-    if machine_id in machines:
-        # Simplified command handling for this example
-        if command == "stop":
-            # This is a placeholder; define what "stop" means for your system.
-            # Maybe queue a specific LED command or change state.
-            machines[machine_id]["command_queue"].append({"action": "set_leds", "red": "on", "yellow": "off"})
-        elif command == "restart":
-            # Placeholder; you might reset the baseline state, for example.
-            machines[machine_id]["baseline_state"] = "needed"
-            machines[machine_id]["status"] = "idle"
-        return {"status": "ok", "message": f"Command '{command}' queued for {machine_id}"}
-    return {"status": "machine not found"}
+    data = await request.json()
+    machine_id, command_str = data.get("id"), data.get("command")
+
+    if not machine_id or not command_str:
+        return {"status": "error", "message": "Missing id or command"}
+    
+    # Use the manager to send commands immediately
+    if command_str == "stop":
+        await manager.send_command(machine_id, {"action": "toggle_monitoring"})
+
+    elif command_str == "restart":
+        # Reset server state first
+        if machine_id in machines:
+            machines[machine_id].update({"baseline_state": "needed", "status": "idle"})
+            # Clear all data buffers
+            for key in ["baseline_x_buffer", "baseline_y_buffer", "baseline_z_buffer", "x_buffer", "y_buffer", "z_buffer", "x_smooth", "y_smooth", "z_smooth"]:
+                machines[machine_id][key] = []
+        
+        # Then send commands to ESP32
+        await manager.send_command(machine_id, {"action": "reset_state"})
+        await manager.send_command(machine_id, {"action": "set_leds", "red": "off", "yellow": "off"})
+    
+    return {"status": "ok", "message": f"Command '{command_str}' sent."}
