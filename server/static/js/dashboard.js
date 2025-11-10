@@ -1,3 +1,7 @@
+let hasLoadedHistory = false;
+let historyRefreshTimer = null; // This will hold our timer
+const HISTORY_REFRESH_INTERVAL_MS = 30000; // 30 seconds
+
 const ws = new WebSocket(`ws://${window.location.host}/ws/dashboard`);
 const machinesContainer = document.getElementById("machines-container");
 const machineCharts = {};
@@ -7,6 +11,35 @@ ws.onopen = () => console.log("Dashboard WS open");
 ws.onmessage = (ev) => {
   try {
     const data = JSON.parse(ev.data);
+
+    // ================= START: NEW LOGIC TO LOAD HISTORY =================
+    // This block checks if history has been loaded. If not, it finds the
+    // first machine ID from the data and calls the function to load its history.
+    const machineIds = Object.keys(data).filter(id => typeof data[id] === "object" && data[id].x !== undefined);
+    if (machineIds.length > 0) {
+        // Filter out keys like 'temperature' to get only machine objects
+        const firstMachineId = machineIds[0];
+
+        if (!hasLoadedHistory) {
+            console.log(`First machine detected: ${firstMachineId}. Loading 30-day history.`);
+            
+            // This function is in your new history.js file
+            loadHistoricalData(firstMachineId,true); 
+            
+            hasLoadedHistory = true; // Set the flag to true so this only runs once
+        }
+
+        if (!historyRefreshTimer) {
+            console.log(`New data received. Scheduling history refresh in ${HISTORY_REFRESH_INTERVAL_MS / 1000} seconds.`);
+            historyRefreshTimer = setTimeout(() => {
+                console.log("Timer fired! Refreshing historical data.");
+                loadHistoricalData(firstMachineId,false);
+                historyRefreshTimer = null; // IMPORTANT: Reset the timer so a new one can be scheduled
+            }, HISTORY_REFRESH_INTERVAL_MS);
+        }
+    }
+    // ================== END: NEW LOGIC TO LOAD HISTORY ==================
+
 
     // 🔹 If data has temperature/humidity (from DHT11)
     if (data.temperature !== undefined && data.humidity !== undefined) {

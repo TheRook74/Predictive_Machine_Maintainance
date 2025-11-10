@@ -10,7 +10,8 @@ from scipy import signal
 import os
 from dotenv import load_dotenv
 import telegram
-
+from fastapi.responses import JSONResponse
+import pandas as pd 
 
 # Imports related to InfluxDB
 from influxdb_client import InfluxDBClient, Point, WriteOptions
@@ -43,11 +44,13 @@ templates = Jinja2Templates(directory="templates")
 try:
     influx_client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
     write_api = influx_client.write_api(write_options=SYNCHRONOUS)
+    query_api = influx_client.query_api()
     print("Successfully connected to InfluxDB Cloud.")
 except Exception as e:
     print(f"FATAL: Could not connect to InfluxDB. Check credentials. Error: {e}")
     influx_client = None
     write_api = None
+    query_api = None
 
 # --- ADD THIS ENTIRE CLASS ---
 class ConnectionManager:
@@ -60,8 +63,16 @@ class ConnectionManager:
         self.active_connections[machine_id] = websocket
 
     def disconnect(self, machine_id: str):
+        # 1. Remove the active websocket connection
         if machine_id in self.active_connections:
             del self.active_connections[machine_id]
+            print(f"Removed connection for '{machine_id}' from the active pool.")
+
+        # 2. Completely delete the application state for that machine.
+        #    The defaultdict will create a fresh one if it ever reconnects.
+        if machine_id in machines:
+            del machines[machine_id]
+            print(f"Cleared all application state and data buffers for '{machine_id}'.")
 
     async def send_command(self, machine_id: str, command: dict):
         if machine_id in self.active_connections:
@@ -99,7 +110,7 @@ async def send_telegram_alert(message: str):
     except Exception as e:
         print(f"Failed to send Telegram alert: {e}")
 
-# ✅ FIX 1: Add a global dictionary to hold the latest environment data
+# FIX 1: Add a global dictionary to hold the latest environment data
 environment_data = {"temperature": None, "humidity": None}
 dashboard_clients = set(); _last_broadcast = 0.0
 
@@ -180,7 +191,7 @@ def compute_fft_and_compare(machine_id):
     machine["fft_freqs"], machine["fft_x_db"], machine["fft_y_db"], machine["fft_z_db"] = freqs, x_db, y_db, z_db
     max_peak_db = max(np.max(x_db, initial=-200), np.max(y_db, initial=-200), np.max(z_db, initial=-200))
     
-    CRITICAL_SIGMA = 7.0; WARNING_SIGMA  = 4.0
+    CRITICAL_SIGMA =10.0; WARNING_SIGMA  = 6.0
     mean = machine["baseline_peak_db_mean"]
     std  = machine["baseline_peak_db_std"]
     critical_threshold = mean + CRITICAL_SIGMA * std
@@ -202,7 +213,7 @@ def compute_fft_and_compare(machine_id):
         now = time.time()
         if machine["status"] in ["warning", "critical"]:
             if now - machine.get("last_alert_time", 0) > ALERT_COOLDOWN_SECONDS:
-                alert_message = f"🚨 ALERT: Machine '{machine_id}' status changed to {machine['status'].upper()}!"
+                alert_message = f" ALERT: Machine '{machine_id}' status changed to {machine['status'].upper()}!"
                 asyncio.create_task(send_telegram_alert(alert_message))
                 machine["last_alert_time"] = now
         # --- END ALERTING LOGIC ---
@@ -224,7 +235,7 @@ def prepare_snapshot():
         else: freqs_send, x_send, y_send, z_send = [], [], [], []
         snapshot[machine_id] = {"status": machine["status"], "x": to_serializable(machine["x_smooth"][-MAX_SMOOTH_HISTORY:]), "y": to_serializable(machine["y_smooth"][-MAX_SMOOTH_HISTORY:]), "z": to_serializable(machine["z_smooth"][-MAX_SMOOTH_HISTORY:]), "fft_freqs": freqs_send, "fft_x_db": x_send, "fft_y_db": y_send, "fft_z_db": z_send}
     
-    # ✅ FIX 2: Merge the environment data into the snapshot payload before sending.
+    # FIX 2: Merge the environment data into the snapshot payload before sending.
     # The '|' operator merges the two dictionaries.
     return snapshot | environment_data
 
@@ -309,7 +320,7 @@ async def dashboard(request: Request): return templates.TemplateResponse("index.
 # --- REPLACE the existing /ws/esp function with this ---
 @app.websocket("/ws/esp")
 async def websocket_esp(websocket: WebSocket):
-    # ✅ FIX: Accept the connection *before* trying to read from it.
+    # FIX: Accept the connection *before* trying to read from it.
     await websocket.accept()
     
     machine_id = None
@@ -382,3 +393,68 @@ async def send_command(request: Request):
         await manager.send_command(machine_id, {"action": "set_leds", "red": "off", "yellow": "off"})
     
     return {"status": "ok", "message": f"Command '{command_str}' sent."}
+
+
+# In main.py, find and completely replace your old get_history function with this one.
+# Make sure you have "import pandas as pd" at the top of your file.
+
+# In main.py, replace the entire get_history function with this block.
+
+# In main.py, replace the entire get_history function.
+
+@app.get("/api/history/{machine_id}")
+async def get_history(machine_id: str):
+    if not query_api:
+        return JSONResponse(status_code=503, content={"error": "InfluxDB query service not available"})
+
+    # --- (CORRECTED v3) Flux Query for DHT ---
+    # We REMOVED the strict filter to ensure all data is returned.
+    flux_query_dht = f'''
+    from(bucket: "{INFLUXDB_BUCKET}")
+        |> range(start: -30d)
+        |> filter(fn: (r) => r["_measurement"] == "machine_data")
+        |> filter(fn: (r) => r["machine_id"] == "{machine_id}")
+        |> filter(fn: (r) => r["_field"] == "temperature" or r["_field"] == "humidity")
+        |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+        |> sort(columns: ["_time"], desc: true)
+        |> limit(n: 300)
+        |> group()
+        |> sort(columns: ["_time"], desc: false)
+    '''
+
+    # --- (CORRECTED v3) Flux Query for Accelerometer ---
+    # We REMOVED the strict filter here as well.
+    flux_query_accel = f'''
+    from(bucket: "{INFLUXDB_BUCKET}")
+        |> range(start: -30d)
+        |> filter(fn: (r) => r["_measurement"] == "machine_data")
+        |> filter(fn: (r) => r["machine_id"] == "{machine_id}")
+        |> filter(fn: (r) => r["_field"] == "x_mean" or r["_field"] == "y_mean" or r["_field"] == "z_mean")
+        |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+        |> sort(columns: ["_time"], desc: true)
+        |> limit(n: 300)
+        |> group()
+        |> sort(columns: ["_time"], desc: false)
+    '''
+
+    try:
+        print(f"Querying 300-point history for {machine_id}...")
+
+        result_dht = query_api.query_data_frame(query=flux_query_dht)
+        result_accel = query_api.query_data_frame(query=flux_query_accel)
+
+        def format_for_charts(df):
+            if df.empty:
+                return {}
+            df_formatted = df.copy() # Use .copy() to be safe
+            df_formatted['_time'] = df_formatted['_time'].astype(str)
+            return df_formatted.to_dict(orient='list')
+
+        dht_data = format_for_charts(result_dht)
+        accel_data = format_for_charts(result_accel)
+
+        return {"dht": dht_data, "accelerometer": accel_data}
+
+    except Exception as e:
+        print(f"Error querying InfluxDB: {e}")
+        return JSONResponse(status_code=500, content={"error": "Failed to query or process historical data"})

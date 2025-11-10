@@ -5,6 +5,8 @@
   <title>Predictive Maintenance Dashboard</title>
   <link rel="stylesheet" href="/static/css/style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- 1. ADD THIS SCRIPT FOR THE CHART.JS DATE ADAPTER -->
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 </head>
 <body>
   <header>
@@ -14,13 +16,27 @@
 
   <div id="machines-container"></div>
 
-  <!-- Add this right after machines-container -->
-<div id="env-section" style="margin-top:20px;padding:10px;border:1px solid rgba(255,255,255,0.08);border-radius:12px;background:rgba(20,30,40,0.6);">
-  <h3 style="color:#e6f0ff;margin-bottom:8px;">🌡️ Environment Data</h3>
-  <p style="color:#9fbce8;">Temperature: <span id="temperature">--</span> °C</p>
-  <p style="color:#9fbce8;">Humidity: <span id="humidity">--</span> %</p>
-</div>
+  <div id="env-section" style="margin-top:20px;padding:10px;border:1px solid rgba(255,255,255,0.08);border-radius:12px;background:rgba(20,30,40,0.6);">
+    <h3 style="color:#e6f0ff;margin-bottom:8px;">🌡️ Environment Data</h3>
+    <p style="color:#9fbce8;">Temperature: <span id="temperature">--</span> °C</p>
+    <p style="color:#9fbce8;">Humidity: <span id="humidity">--</span> %</p>
+  </div>
+
+  <!-- 2. ADD THIS ENTIRE NEW SECTION FOR THE HISTORY CHARTS -->
+  <!-- In templates/index.html -->
+  <div id="history-section" style="margin-top:20px;">
+      <div style="display: flex; align-items: center; gap: 15px;">
+          <h2 style="color:#e6f0ff;">Historical Data</h2>
+          <!-- The auto-refresh from the last step makes a manual button unnecessary -->
+      </div>
+      <!-- MODIFICATION: Add the new grid container div -->
+      <div id="history-grid">
+        <!-- JavaScript will create the charts inside this grid -->
+      </div>
+  </div>
 
   <script src="/static/js/dashboard.js"></script>
+  <!-- 3. ADD THIS SCRIPT TAG TO LOAD YOUR NEW HISTORY.JS FILE -->
+  <script src="/static/js/history.js"></script>
 </body>
 </html>

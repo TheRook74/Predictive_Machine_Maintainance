@@ -18,9 +18,9 @@ using namespace websockets;
 #define DHTTYPE DHT11      // ✅ Sensor type
 
 // --- Network Credentials ---
-const char* ssid = "The Rider Aadi ";
-const char* password = "papajiii";
-const char* websocketServer = "ws://10.114.69.140:8000/ws/esp";
+const char* ssid = "KnightE4";
+const char* password = "knightE0";
+const char* websocketServer = "ws://10.210.160.140:8000/ws/esp";
 
 // --- State Variables ---
 bool monitoringActive = false;
@@ -65,11 +65,15 @@ float baselineTempAvg = 0, baselineHumAvg = 0;
 // --- Other Globals ---
 WebsocketsClient client;
 Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
+// --- ADD THIS near the top with other globals ---
+volatile bool is_connected = false;
 
 // --- Function Declarations ---
 void readAccelerometer(float &x, float &y, float &z);
 void sendJSON(const char* type, int samples, float* x, float* y, float* z);
 void sendDHTData(const char* type, float temperature, float humidity); // ✅ NEW
+void onEvents(WebsocketsEvent event, String data); // Forward declaration
+
 
 // --- ADD THIS NEW FUNCTION IN your sketch.ino file ---
 
@@ -123,6 +127,17 @@ void onMessage(WebsocketsMessage msg) {
   }
 }
 
+// --- ADD THIS new function anywhere in your .ino file ---
+void onEvents(WebsocketsEvent event, String data) {
+    if (event == WebsocketsEvent::ConnectionOpened) {
+        Serial.println("Connnection Opened");
+        is_connected = true;
+    } else if (event == WebsocketsEvent::ConnectionClosed) {
+        Serial.println("Connnection Closed");
+        is_connected = false;
+    }
+}
+
 // --- Setup ---
 void setup() {
   Serial.begin(115200);
@@ -142,6 +157,7 @@ void setup() {
   Serial.println("\nWi-Fi connected!");
 
   client.onMessage(onMessage);
+  client.onEvent(onEvents);
   while (!client.connect(websocketServer)) { Serial.println("WS connect fail, retry..."); delay(2000); }
   Serial.println("WebSocket connected!");
 
@@ -150,138 +166,169 @@ void setup() {
 }
 
 // --- Loop ---
+// --- REPLACE your existing loop() function with this ---
+
 void loop() {
-  unsigned long currentMillis = millis();
-  client.poll();
 
-  // --- LED Blinking ---
-  if (yellowLedBlinking && currentMillis - previousBlinkMillis >= blinkInterval) {
-    previousBlinkMillis = currentMillis;
-    digitalWrite(YELLOW_LED_PIN, !digitalRead(YELLOW_LED_PIN));
-  }
+  // First, check if the client is connected.
+  if (is_connected) {
+    
+    // ---------------------------------------------------
+    // --- NORMAL OPERATION: All your original code goes here ---
+    // ---------------------------------------------------
+    
+    client.poll(); // Poll for messages from the server.
+    
+    unsigned long currentMillis = millis();
 
-  // --- Button Handling ---
-  if (currentMillis - buttonPressTime > 250) {
-    if (digitalRead(CONFIG_BUTTON) == LOW && currentBaselineState == NOT_STARTED) {
-      buttonPressTime = currentMillis;
-      currentBaselineState = COLLECTING;
-      baselineSampleIndex = 0;
-      baselineTempSum = baselineHumSum = 0;
-      dhtSampleCount = 0;
-      digitalWrite(LED_PIN, HIGH);
-      Serial.println("Starting baseline collection...");
+    // --- LED Blinking ---
+    if (yellowLedBlinking && currentMillis - previousBlinkMillis >= blinkInterval) {
+      previousBlinkMillis = currentMillis;
+      digitalWrite(YELLOW_LED_PIN, !digitalRead(YELLOW_LED_PIN));
     }
 
-    if (digitalRead(STOP_BUTTON) == LOW && currentBaselineState == COMPLETE) {
-      buttonPressTime = currentMillis;
-      monitoringActive = !monitoringActive;
-      Serial.print("Monitoring Active: "); Serial.println(monitoringActive);
-    }
-  }
-
-  // --- Baseline Collection ---
-  if (currentBaselineState == COLLECTING) {
-    // This is an application-level heartbeat that does not depend on a specific library function.
-    if (currentMillis - lastKeepAliveTime >= 20000) {
-      lastKeepAliveTime = currentMillis;
-      strcpy(json_buffer, "{\"type\":\"ping\"}"); 
-      client.send(json_buffer);
-      Serial.println("-> Sent application-level keep-alive ping.");
-    }
-    if (currentMillis - lastSampleTime >= 10) {
-      lastSampleTime = currentMillis;
-
-      // Collect accelerometer
-      if (baselineSampleIndex < BASELINE_SAMPLES) {
-        readAccelerometer(baselineX[baselineSampleIndex], baselineY[baselineSampleIndex], baselineZ[baselineSampleIndex]);
-        baselineSampleIndex++;
+    // --- Button Handling ---
+    if (currentMillis - buttonPressTime > 250) {
+      if (digitalRead(CONFIG_BUTTON) == LOW && currentBaselineState == NOT_STARTED) {
+        buttonPressTime = currentMillis;
+        currentBaselineState = COLLECTING;
+        baselineSampleIndex = 0;
+        baselineTempSum = baselineHumSum = 0;
+        dhtSampleCount = 0;
+        digitalWrite(LED_PIN, HIGH);
+        Serial.println("Starting baseline collection...");
       }
 
-      // ✅ Collect DHT baseline
-      if (baselineSampleIndex % 100 == 0) { // Every 100 accelerometer samples (~1s)
-        float t = dht.readTemperature();
-        float h = dht.readHumidity();
-        if (!isnan(t) && !isnan(h)) {
-          baselineTempSum += t;
-          baselineHumSum += h;
-          dhtSampleCount++;
+      if (digitalRead(STOP_BUTTON) == LOW && currentBaselineState == COMPLETE) {
+        buttonPressTime = currentMillis;
+        monitoringActive = !monitoringActive;
+        Serial.print("Monitoring Active: "); Serial.println(monitoringActive);
+      }
+    }
+
+    // --- Baseline Collection ---
+    if (currentBaselineState == COLLECTING) {
+      if (currentMillis - lastKeepAliveTime >= 20000) {
+        lastKeepAliveTime = currentMillis;
+        strcpy(json_buffer, "{\"type\":\"ping\"}"); 
+        client.send(json_buffer);
+        Serial.println("-> Sent application-level keep-alive ping.");
+      }
+      if (currentMillis - lastSampleTime >= 10) {
+        lastSampleTime = currentMillis;
+        if (baselineSampleIndex < BASELINE_SAMPLES) {
+          readAccelerometer(baselineX[baselineSampleIndex], baselineY[baselineSampleIndex], baselineZ[baselineSampleIndex]);
+          baselineSampleIndex++;
+        }
+        if (baselineSampleIndex % 100 == 0) {
+          float t = dht.readTemperature();
+          float h = dht.readHumidity();
+          if (!isnan(t) && !isnan(h)) {
+            baselineTempSum += t;
+            baselineHumSum += h;
+            dhtSampleCount++;
+          }
+        }
+        if (baselineSampleIndex >= BASELINE_SAMPLES) {
+          currentBaselineState = SENDING;
+          baselineChunkIndex = 0;
+          if (dhtSampleCount > 0) {
+            baselineTempAvg = baselineTempSum / dhtSampleCount;
+            baselineHumAvg = baselineHumSum / dhtSampleCount;
+          }
+          Serial.println("Baseline collection complete. Sending to server...");
         }
       }
+    }
 
-      if (baselineSampleIndex >= BASELINE_SAMPLES) {
-        currentBaselineState = SENDING;
-        baselineChunkIndex = 0;
-        if (dhtSampleCount > 0) {
-          baselineTempAvg = baselineTempSum / dhtSampleCount;
-          baselineHumAvg = baselineHumSum / dhtSampleCount;
+    // --- Baseline Sending ---
+    if (currentBaselineState == SENDING) {
+      if (currentMillis - lastSendTime >= 50) {
+        lastSendTime = currentMillis;
+        if (baselineChunkIndex < BASELINE_SAMPLES) {
+          int chunk = (baselineChunkIndex + CHUNK_SIZE <= BASELINE_SAMPLES)
+            ? CHUNK_SIZE : (BASELINE_SAMPLES - baselineChunkIndex);
+          sendJSON("configure", chunk, &baselineX[baselineChunkIndex],
+                   &baselineY[baselineChunkIndex], &baselineZ[baselineChunkIndex]);
+          baselineChunkIndex += CHUNK_SIZE;
+        } else {
+          sendDHTData("baseline_dht", baselineTempAvg, baselineHumAvg);
+          currentBaselineState = COMPLETE;
+          monitoringActive = true;
+          digitalWrite(LED_PIN, LOW);
+          Serial.println("Baseline sent, monitoring active.");
         }
-        Serial.println("Baseline collection complete. Sending to server...");
-      }
-    }
-  }
-
-  // --- Baseline Sending ---
-  if (currentBaselineState == SENDING) {
-    if (currentMillis - lastSendTime >= 50) {
-      lastSendTime = currentMillis;
-      if (baselineChunkIndex < BASELINE_SAMPLES) {
-        int chunk = (baselineChunkIndex + CHUNK_SIZE <= BASELINE_SAMPLES)
-          ? CHUNK_SIZE : (BASELINE_SAMPLES - baselineChunkIndex);
-        sendJSON("configure", chunk, &baselineX[baselineChunkIndex],
-                 &baselineY[baselineChunkIndex], &baselineZ[baselineChunkIndex]);
-        baselineChunkIndex += CHUNK_SIZE;
-      } else {
-        sendDHTData("baseline_dht", baselineTempAvg, baselineHumAvg); // ✅ Send baseline avg DHT
-        currentBaselineState = COMPLETE;
-        monitoringActive = true;
-        digitalWrite(LED_PIN, LOW);
-        Serial.println("Baseline sent, monitoring active.");
-      }
-    }
-  }
-
-  if (currentBaselineState == COMPLETE && !monitoringActive) {
-    if (currentMillis - lastKeepAliveTime >= 20000) {
-      lastKeepAliveTime = currentMillis;
-      strcpy(json_buffer, "{\"type\":\"ping\"}"); 
-      client.send(json_buffer);
-      Serial.println("-> Sent keep-alive ping while paused.");
-    }
-  }
-
-  // --- Status LED ---
-  if (currentBaselineState == NOT_STARTED && currentMillis - lastStatusBlinkTime >= 300) {
-    lastStatusBlinkTime = currentMillis;
-    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-  }
-
-  // --- Monitoring Mode ---
-  if (monitoringActive && currentBaselineState == COMPLETE) {
-    if (currentMillis - lastSampleTime >= 10) {
-      lastSampleTime = currentMillis;
-      readAccelerometer(xBuffer[bufferIndex], yBuffer[bufferIndex], zBuffer[bufferIndex]);
-      bufferIndex++;
-
-      if (bufferIndex >= WINDOW_SIZE) {
-        sendJSON("data", bufferIndex, xBuffer, yBuffer, zBuffer);
-        bufferIndex = 0;
       }
     }
 
-    // ✅ --- NEW, SEPARATE DHT LOGIC ---
-    // Send DHT data on its own timer, for example, every 2 seconds (2000 ms)
-    if (currentMillis - lastDhtSendTime >= 2000) {
-        lastDhtSendTime = currentMillis;
+    // --- Paused State Ping ---
+    if (currentBaselineState == COMPLETE && !monitoringActive) {
+      if (currentMillis - lastKeepAliveTime >= 20000) {
+        lastKeepAliveTime = currentMillis;
+        strcpy(json_buffer, "{\"type\":\"ping\"}"); 
+        client.send(json_buffer);
+        Serial.println("-> Sent keep-alive ping while paused.");
+      }
+    }
 
-        float t = dht.readTemperature();
-        float h = dht.readHumidity();
-        if (!isnan(t) && !isnan(h)) {
-          sendDHTData("dht", t, h);
+    // --- Status LED for Idle State ---
+    if (currentBaselineState == NOT_STARTED && currentMillis - lastStatusBlinkTime >= 300) {
+      lastStatusBlinkTime = currentMillis;
+      digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+    }
+
+    // --- Monitoring Mode ---
+    if (monitoringActive && currentBaselineState == COMPLETE) {
+      if (currentMillis - lastSampleTime >= 10) {
+        lastSampleTime = currentMillis;
+        readAccelerometer(xBuffer[bufferIndex], yBuffer[bufferIndex], zBuffer[bufferIndex]);
+        bufferIndex++;
+        if (bufferIndex >= WINDOW_SIZE) {
+          sendJSON("data", bufferIndex, xBuffer, yBuffer, zBuffer);
+          bufferIndex = 0;
         }
+      }
+      if (currentMillis - lastDhtSendTime >= 2000) {
+          lastDhtSendTime = currentMillis;
+          float t = dht.readTemperature();
+          float h = dht.readHumidity();
+          if (!isnan(t) && !isnan(h)) {
+            sendDHTData("dht", t, h);
+          }
+      }
     }
+    
+  } else {
+    
+    // ---------------------------------------------------------------
+    // --- DISCONNECTED STATE: Halt all operations until reset ---
+    // ---------------------------------------------------------------
+    
+    // This condition ensures the "Halt" message is printed only ONCE
+    // when the device transitions from an active state to a disconnected one.
+    if (currentBaselineState != NOT_STARTED) {
+      Serial.println("\n-------------------------------------------");
+      Serial.println("FATAL: Connection to server lost.");
+      Serial.println("Halting all operations. Please reset device.");
+      Serial.println("-------------------------------------------");
 
+      // Set variables to a safe, stopped state.
+      monitoringActive = false;
+      currentBaselineState = NOT_STARTED;
+      yellowLedBlinking = false;
+      
+      // Set LEDs to a clear "error/halted" state (e.g., solid red).
+      digitalWrite(RED_LED_PIN, LOW);
+      digitalWrite(YELLOW_LED_PIN, LOW);
+      digitalWrite(LED_PIN, LOW);
+    }
+    
+    // Do nothing but wait. The device is now effectively halted from an
+    // operational standpoint and needs to be manually reset.
+    delay(1000);
   }
 }
+
 
 // --- Functions ---
 void readAccelerometer(float &x, float &y, float &z) {

@@ -3,3 +3,20 @@ body { background: linear-gradient(180deg,#071024 0%, #041226 100%); color: #e6f
 button { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); color: #dbeefe; padding: 6px 10px; border-radius: 8px; cursor: pointer; }
 button:hover { transform: translateY(-1px); }
 .small { font-size: 12px; color: #9fbce8; }
+/* --- Add these styles for the history charts layout --- */
+
+/* --- REPLACE WITH THIS NEW CODE --- */
+
+#history-grid {
+  display: grid; /* Use Grid layout instead of Flex */
+  grid-template-columns: repeat(3, 1fr); /* Create 3 equal-fraction columns */
+  gap: 20px; /* Keep the space between charts */
+  width: 100%;
+  margin-top: 15px;
+}
+
+.chart-wrapper {
+  /* The 'flex: 1' is no longer needed with Grid */
+  position: relative;
+  height: 280px; 
+}
