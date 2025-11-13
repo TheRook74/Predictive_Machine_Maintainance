@@ -4,33 +4,32 @@
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_ADXL345_U.h>
-#include <DHT.h>  // ✅ NEW
-
+#include <DHT.h>  
 using namespace websockets;
 
-// --- Pin Definitions ---
+// Pin Definitions 
 #define CONFIG_BUTTON 12
 #define STOP_BUTTON 14
 #define LED_PIN 2
 #define YELLOW_LED_PIN 26
 #define RED_LED_PIN 27
-#define DHTPIN 4           // ✅ DHT11 Data pin connected to GPIO 4
-#define DHTTYPE DHT11      // ✅ Sensor type
+#define DHTPIN 4           
+#define DHTTYPE DHT11      
 
-// --- Network Credentials ---
+// Network Credentials 
 const char* ssid = "KnightE4";
 const char* password = "knightE0";
 const char* websocketServer = "ws://10.210.160.140:8000/ws/esp";
 
-// --- State Variables ---
+// State Variables 
 bool monitoringActive = false;
 bool yellowLedBlinking = false;
 
-// --- Baseline State Machine ---
+// Baseline State Machine 
 enum BaselineState { NOT_STARTED, COLLECTING, SENDING, COMPLETE };
 BaselineState currentBaselineState = NOT_STARTED;
 
-// --- Timers ---
+// Timers 
 unsigned long previousBlinkMillis = 0;
 const long blinkInterval = 500;
 unsigned long lastSampleTime = 0;
@@ -40,7 +39,7 @@ unsigned long lastSendTime = 0;
 unsigned long lastKeepAliveTime = 0;
 unsigned long lastDhtSendTime = 0;
 
-// --- Buffers ---
+// Buffers 
 #define BASELINE_SAMPLES 3000
 #define CHUNK_SIZE 100
 #define WINDOW_SIZE 100
@@ -52,43 +51,41 @@ int bufferIndex = 0;
 int baselineSampleIndex = 0;
 int baselineChunkIndex = 0;
 
-// ✅ FIX: Declare the global character buffer for JSON serialization
+// Declare the global character buffer for JSON serialization
 char json_buffer[JSON_BUFFER_SIZE];
 
 
-// --- DHT Sensor ---
-DHT dht(DHTPIN, DHTTYPE); // ✅ DHT object
-float baselineTempSum = 0, baselineHumSum = 0; // ✅ Accumulators
+// DHT Sensor 
+DHT dht(DHTPIN, DHTTYPE); 
+float baselineTempSum = 0, baselineHumSum = 0; 
 int dhtSampleCount = 0;
 float baselineTempAvg = 0, baselineHumAvg = 0;
 
-// --- Other Globals ---
+// Other Globals 
 WebsocketsClient client;
 Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
-// --- ADD THIS near the top with other globals ---
 volatile bool is_connected = false;
 
-// --- Function Declarations ---
+//  Function Declarations 
 void readAccelerometer(float &x, float &y, float &z);
 void sendJSON(const char* type, int samples, float* x, float* y, float* z);
-void sendDHTData(const char* type, float temperature, float humidity); // ✅ NEW
-void onEvents(WebsocketsEvent event, String data); // Forward declaration
+void sendDHTData(const char* type, float temperature, float humidity); 
+void onEvents(WebsocketsEvent event, String data); 
 
 
-// --- ADD THIS NEW FUNCTION IN your sketch.ino file ---
 
 // Sends a one-time message to identify the device to the server on connect.
 void sendIdentification() {
   DynamicJsonDocument doc(256);
   doc["machine_id"] = "MACHINE_1";
-  doc["type"] = "identify"; // A new, unique message type
+  doc["type"] = "identify"; 
   
   size_t len = serializeJson(doc, json_buffer, JSON_BUFFER_SIZE);
   client.send(json_buffer, len);
   Serial.println("Sent identification packet to server.");
 }
 
-// --- CORRECTED onMessage FUNCTION ---
+// onMessage FUNCTION 
 void onMessage(WebsocketsMessage msg) {
   DynamicJsonDocument doc(512);
   if (deserializeJson(doc, msg.data())) return;
@@ -102,7 +99,7 @@ void onMessage(WebsocketsMessage msg) {
       const char* yellowState = command["yellow"];
       digitalWrite(RED_LED_PIN, (strcmp(redState, "on") == 0) ? HIGH : LOW);
       
-      // ✅ FIX: Changed yellowBlinking back to the correct variable name yellowLedBlinking
+      // Changed yellowBlinking back to the correct variable name yellowLedBlinking
       if (strcmp(yellowState, "blink") == 0) { 
         yellowLedBlinking = true; 
       } else { 
@@ -114,7 +111,7 @@ void onMessage(WebsocketsMessage msg) {
       Serial.println("Received 'reset_state' command. Returning to idle.");
       monitoringActive = false;
       currentBaselineState = NOT_STARTED;
-      // ✅ FIX: Changed yellowBlinking back to the correct variable name yellowLedBlinking
+      // Changed yellowBlinking back to the correct variable name yellowLedBlinking
       yellowLedBlinking = false;
     } 
     else if (action && strcmp(action, "toggle_monitoring") == 0) {
@@ -127,7 +124,7 @@ void onMessage(WebsocketsMessage msg) {
   }
 }
 
-// --- ADD THIS new function anywhere in your .ino file ---
+// ADD THIS new function anywhere in your .ino file 
 void onEvents(WebsocketsEvent event, String data) {
     if (event == WebsocketsEvent::ConnectionOpened) {
         Serial.println("Connnection Opened");
@@ -138,7 +135,7 @@ void onEvents(WebsocketsEvent event, String data) {
     }
 }
 
-// --- Setup ---
+// Setup 
 void setup() {
   Serial.begin(115200);
   pinMode(CONFIG_BUTTON, INPUT_PULLUP);
@@ -149,7 +146,7 @@ void setup() {
 
   if (!accel.begin()) { Serial.println("ADXL345 Error"); while (1); }
   accel.setRange(ADXL345_RANGE_16_G);
-  dht.begin(); // ✅ Initialize DHT
+  dht.begin(); 
 
   WiFi.begin(ssid, password);
   Serial.print("Connecting to Wi-Fi...");
@@ -161,33 +158,26 @@ void setup() {
   while (!client.connect(websocketServer)) { Serial.println("WS connect fail, retry..."); delay(2000); }
   Serial.println("WebSocket connected!");
 
-  // ESP32 telling its Identity to the server...
   sendIdentification();
 }
 
-// --- Loop ---
-// --- REPLACE your existing loop() function with this ---
 
 void loop() {
 
   // First, check if the client is connected.
   if (is_connected) {
     
-    // ---------------------------------------------------
-    // --- NORMAL OPERATION: All your original code goes here ---
-    // ---------------------------------------------------
-    
     client.poll(); // Poll for messages from the server.
     
     unsigned long currentMillis = millis();
 
-    // --- LED Blinking ---
+    // LED Blinking 
     if (yellowLedBlinking && currentMillis - previousBlinkMillis >= blinkInterval) {
       previousBlinkMillis = currentMillis;
       digitalWrite(YELLOW_LED_PIN, !digitalRead(YELLOW_LED_PIN));
     }
 
-    // --- Button Handling ---
+    // Button Handling 
     if (currentMillis - buttonPressTime > 250) {
       if (digitalRead(CONFIG_BUTTON) == LOW && currentBaselineState == NOT_STARTED) {
         buttonPressTime = currentMillis;
@@ -206,7 +196,7 @@ void loop() {
       }
     }
 
-    // --- Baseline Collection ---
+    // Baseline Collection 
     if (currentBaselineState == COLLECTING) {
       if (currentMillis - lastKeepAliveTime >= 20000) {
         lastKeepAliveTime = currentMillis;
@@ -241,7 +231,7 @@ void loop() {
       }
     }
 
-    // --- Baseline Sending ---
+    // Baseline Sending 
     if (currentBaselineState == SENDING) {
       if (currentMillis - lastSendTime >= 50) {
         lastSendTime = currentMillis;
@@ -261,7 +251,7 @@ void loop() {
       }
     }
 
-    // --- Paused State Ping ---
+    // Paused State Ping 
     if (currentBaselineState == COMPLETE && !monitoringActive) {
       if (currentMillis - lastKeepAliveTime >= 20000) {
         lastKeepAliveTime = currentMillis;
@@ -271,13 +261,13 @@ void loop() {
       }
     }
 
-    // --- Status LED for Idle State ---
+    // Status LED for Idle State 
     if (currentBaselineState == NOT_STARTED && currentMillis - lastStatusBlinkTime >= 300) {
       lastStatusBlinkTime = currentMillis;
       digitalWrite(LED_PIN, !digitalRead(LED_PIN));
     }
 
-    // --- Monitoring Mode ---
+    // Monitoring Mode 
     if (monitoringActive && currentBaselineState == COMPLETE) {
       if (currentMillis - lastSampleTime >= 10) {
         lastSampleTime = currentMillis;
@@ -300,37 +290,30 @@ void loop() {
     
   } else {
     
-    // ---------------------------------------------------------------
-    // --- DISCONNECTED STATE: Halt all operations until reset ---
-    // ---------------------------------------------------------------
-    
-    // This condition ensures the "Halt" message is printed only ONCE
-    // when the device transitions from an active state to a disconnected one.
+    // This condition ensures the "Halt" message is printed only once when the device transitions from an active state to a disconnected one.
     if (currentBaselineState != NOT_STARTED) {
       Serial.println("\n-------------------------------------------");
       Serial.println("FATAL: Connection to server lost.");
       Serial.println("Halting all operations. Please reset device.");
       Serial.println("-------------------------------------------");
 
-      // Set variables to a safe, stopped state.
+      // Set variables to a safe, stopped state
       monitoringActive = false;
       currentBaselineState = NOT_STARTED;
       yellowLedBlinking = false;
       
-      // Set LEDs to a clear "error/halted" state (e.g., solid red).
+      // Set LEDs to a clear "error/halted" state 
       digitalWrite(RED_LED_PIN, LOW);
       digitalWrite(YELLOW_LED_PIN, LOW);
       digitalWrite(LED_PIN, LOW);
     }
     
-    // Do nothing but wait. The device is now effectively halted from an
-    // operational standpoint and needs to be manually reset.
     delay(1000);
   }
 }
 
 
-// --- Functions ---
+// Read the accelerometer data
 void readAccelerometer(float &x, float &y, float &z) {
   sensors_event_t event;
   accel.getEvent(&event);
@@ -339,7 +322,7 @@ void readAccelerometer(float &x, float &y, float &z) {
   z = event.acceleration.z;
 }
 
-// ✅ FIX: Use the global buffer to prevent memory fragmentation
+// Function to send the the acceloeremoter data
 void sendJSON(const char* type, int samples, float* x, float* y, float* z) {
   DynamicJsonDocument doc(10000);
   doc["machine_id"] = "MACHINE_1";
@@ -354,7 +337,7 @@ void sendJSON(const char* type, int samples, float* x, float* y, float* z) {
   client.send(json_buffer, len);
 }
 
-// ✅ FIX: Use the global buffer to prevent memory fragmentation
+// Function to Humidity and temperature data
 void sendDHTData(const char* type, float temperature, float humidity) {
   DynamicJsonDocument doc(512);
   doc["machine_id"] = "MACHINE_1";
